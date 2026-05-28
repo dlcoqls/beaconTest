@@ -25,7 +25,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 
-class MainActivity : AppCompatActivity(), BeaconConsumer {
+class MainActivity : AppCompatActivity() {
 
     private lateinit var beaconManager: BeaconManager
     private lateinit var adapter: BeaconAdapter
@@ -111,6 +111,24 @@ class MainActivity : AppCompatActivity(), BeaconConsumer {
         btnScan.setOnClickListener { checkPermissionsAndScan() }
         btnStop.setOnClickListener { stopScan() }
 
+        val region = Region("all-beacons", null, null, null)
+        val regionViewModel = beaconManager.getRegionViewModel(region)
+        regionViewModel.rangedBeacons.observe(this) { beacons ->
+            val now = System.currentTimeMillis()
+            for (beacon in beacons) {
+                val key = beacon.bluetoothAddress
+                val existing = beaconCache[key]
+                val history = existing?.rssiHistory ?: ArrayDeque(5)
+                if (history.size >= 5) history.removeFirst()
+                history.addLast(beacon.rssi)
+                beaconCache[key] = CachedBeacon(
+                    beacon = beacon,
+                    lastSeenMs = now,
+                    rssiHistory = history
+                )
+            }
+        }
+
         checkBluetooth()
     }
 
@@ -122,10 +140,16 @@ class MainActivity : AppCompatActivity(), BeaconConsumer {
     }
 
     private fun checkPermissionsAndScan() {
-        val permissions = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        val permissions = mutableListOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             permissions.add(Manifest.permission.BLUETOOTH_SCAN)
             permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            permissions.add(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
         }
         val missing = permissions.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
@@ -146,7 +170,7 @@ class MainActivity : AppCompatActivity(), BeaconConsumer {
     }
 
     private fun startScan() {
-        beaconManager.bind(this)
+        beaconManager.startRangingBeacons(Region("all-beacons", null, null, null))
         btnScan.isEnabled = false
         btnStop.isEnabled = true
         tvStatus.text = "● 스캔 중"
@@ -158,43 +182,12 @@ class MainActivity : AppCompatActivity(), BeaconConsumer {
     }
 
     private fun stopScan() {
-        beaconManager.unbind(this)
+        beaconManager.stopRangingBeacons(Region("all-beacons", null, null, null))
         handler.removeCallbacks(refreshRunnable)
         btnScan.isEnabled = true
         btnStop.isEnabled = false
         tvStatus.text = "● 대기중"
         tvStatus.setTextColor(Color.parseColor("#6B7280"))
-    }
-
-    // 함수 시그니처 원래대로
-    override fun onBeaconServiceConnect() {
-        beaconManager.removeAllRangeNotifiers()
-        beaconManager.addRangeNotifier { beacons, _ ->
-            val now = System.currentTimeMillis()
-            for (beacon in beacons) {
-                val key = beacon.bluetoothAddress
-                val existing = beaconCache[key]
-
-                // RSSI 히스토리 유지 (평균 계산용)
-                val history = existing?.rssiHistory ?: ArrayDeque(5)
-                if (history.size >= 5) history.removeFirst()
-                history.addLast(beacon.rssi)
-
-                beaconCache[key] = CachedBeacon(
-                    beacon = beacon,
-                    lastSeenMs = now,
-                    rssiHistory = history
-                )
-            }
-        }
-
-        try {
-            beaconManager.startRangingBeaconsInRegion(
-                Region("all-beacons", null, null, null)
-            )
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
     }
 
     private fun updateUI() {
@@ -213,7 +206,7 @@ class MainActivity : AppCompatActivity(), BeaconConsumer {
     override fun onDestroy() {
         super.onDestroy()
         handler.removeCallbacks(refreshRunnable)
-        if (beaconManager.isBound(this)) beaconManager.unbind(this)
+        beaconManager.stopRangingBeacons(Region("all-beacons", null, null, null))
     }
     private fun sendToServer(x: Double, y: Double) {
         val client = OkHttpClient()
